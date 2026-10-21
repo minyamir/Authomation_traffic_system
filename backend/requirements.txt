@@ -1,0 +1,66 @@
+
+# ==========================================
+# Bahir Dar AI Traffic Management Backend
+# Python 3.12
+# ==========================================
+
+# 1. FastAPI Backend and API Server
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+
+# 2. Configuration and Environment Variables
+pydantic
+pydantic-settings
+python-dotenv
+email-validator
+
+# 3. MongoDB Database
+pymongo[srv]
+certifi
+
+# 4. Computer Vision and Image Processing
+opencv-python
+Pillow
+numpy
+
+# 5. AI Object Detection - YOLOv8
+ultralytics
+torch
+torchvision
+
+# 6. Vehicle Tracking
+supervision
+
+# 7. License Plate Detection and OCR
+easyocr
+paddleocr
+
+# 8. HTTP Requests and Async Processing
+requests
+httpx
+aiofiles
+anyio
+
+# 9. Data Processing and Analytics
+pandas
+scipy
+scikit-learn
+
+# 10. Logging and Utilities
+loguru
+python-dateutil
+orjson
+
+# 11. Testing
+pytest
+pytest-asyncio
+
+# 12. Code Quality
+ruff
+ 
+
+
+
+ python -m uvicorn app.main:app --reload
