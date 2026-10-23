@@ -64,3 +64,5 @@ ruff
 
 
  python -m uvicorn app.main:app --reload
+
+ python -m tests.test_congestion_analyzer
