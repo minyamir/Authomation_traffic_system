@@ -468,3 +468,13 @@ Crop the plate region, improve the image, recognize characters using OCR, and as
 Feature 5 — Pedestrian detection and crossing simulation
 
 Detect and count pedestrians, display a simulated WAIT/WALK signal, and enforce safe vehicle/pedestrian signal transitions.
+
+
+
+
+
+
+
+
+
+python -m tests.test_vehicles_tracker_counter_speed

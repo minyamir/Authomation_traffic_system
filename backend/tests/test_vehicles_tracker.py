@@ -1,9 +1,116 @@
 
 import cv2
+import time
 
 from app.services.vehicle_tracker import VehicleTracker
 from app.services.vehicle_counter import VehicleCounter
 from app.services.intersection_analyzer import IntersectionAnalyzer
+from app.services.traffic_light_recommender import TrafficLightRecommender
+
+
+
+class StableTrafficLightController:
+    """Hold each signal phase for its full duration and rotate road priority."""
+
+    def __init__(self) -> None:
+        self.current_road = None
+        self.phase = "ALL_RED"
+        self.phase_started = time.monotonic()
+        self.phase_duration = 2
+        self.green_seconds = 0
+        self.current_demand = "LOW"
+        self.last_served_road = None
+
+    @staticmethod
+    def _green_duration(demand: str, recommendation: dict) -> int:
+        minimum = int(recommendation.get("min_green", 10))
+        maximum = int(recommendation.get("max_green", 30))
+        if maximum < minimum:
+            maximum = minimum
+
+        demand = demand.upper()
+        if demand == "HIGH":
+            return maximum
+        if demand == "MODERATE":
+            return (minimum + maximum) // 2
+        return minimum
+
+    def _ranked_roads(self, recommendation: dict) -> list[dict]:
+        ranked = recommendation.get("ranked_roads", [])
+        return [
+            item for item in ranked
+            if isinstance(item, dict) and item.get("road")
+        ]
+
+    def _start_green(self, recommendation: dict, now: float) -> None:
+        ranked = self._ranked_roads(recommendation)
+
+        if not ranked:
+            self.current_road = recommendation.get("recommended_road", "north")
+            self.current_demand = recommendation.get("demand", "LOW").upper()
+            self.green_seconds = int(recommendation.get("green_seconds", 10))
+        else:
+            # Prefer the highest-ranked road that did not just receive green.
+            candidates = [
+                item for item in ranked
+                if item["road"] != self.last_served_road
+            ]
+            selected = (candidates or ranked)[0]
+            self.current_road = selected["road"]
+            self.current_demand = str(selected.get("demand", "LOW")).upper()
+            self.green_seconds = self._green_duration(
+                self.current_demand, recommendation
+            )
+
+        self.phase = "GREEN"
+        self.phase_duration = max(1, self.green_seconds)
+        self.phase_started = now
+
+    def update(self, recommendation: dict) -> dict:
+        """Update state once per video frame; never change green from demand alone."""
+        now = time.monotonic()
+
+        if self.current_road is None:
+            self._start_green(recommendation, now)
+        elif now - self.phase_started >= self.phase_duration:
+            # Change only when the current phase's timer expires.
+            if self.phase == "GREEN":
+                self.phase = "YELLOW"
+                self.phase_duration = max(
+                    1, int(recommendation.get("yellow_seconds", 3))
+                )
+                self.phase_started = now
+            elif self.phase == "YELLOW":
+                self.last_served_road = self.current_road
+                self.phase = "ALL_RED"
+                self.phase_duration = max(
+                    1, int(recommendation.get("all_red_seconds", 2))
+                )
+                self.phase_started = now
+            else:
+                self._start_green(recommendation, now)
+
+        elapsed = max(0.0, now - self.phase_started)
+        remaining = max(0, int(self.phase_duration - elapsed + 0.999))
+
+        ranked = self._ranked_roads(recommendation)
+        next_road = None
+        if ranked:
+            next_candidates = [
+                item for item in ranked
+                if item["road"] != self.current_road
+            ]
+            if next_candidates:
+                next_road = next_candidates[0]["road"]
+
+        return {
+            "road": self.current_road,
+            "phase": self.phase,
+            "remaining_seconds": remaining,
+            "green_seconds": self.green_seconds,
+            "demand": self.current_demand,
+            "next_road": next_road,
+        }
 
 
 def main():
@@ -20,6 +127,8 @@ def main():
     tracker = VehicleTracker()
     counter = VehicleCounter()
     intersection_analyzer = IntersectionAnalyzer()
+    traffic_light_recommender = TrafficLightRecommender()
+    signal_controller = StableTrafficLightController()
 
     frame_number = 0
     window_name = "Bahir Dar AI - Intelligent Intersection Analysis"
@@ -109,7 +218,25 @@ def main():
             highest_demand = intersection_data["highest_demand"]
             ranking = intersection_data["ranked_approaches"]
 
-            # 5. Draw road regions.
+            # 5. Recommend a traffic-light phase from the analyzed demand.
+            # This is a recommendation only; it does not control real signals.
+            light_recommendation = traffic_light_recommender.recommend(
+                intersection_data
+            )
+            recommended_road = light_recommendation["recommended_road"]
+            recommended_demand = light_recommendation["demand"]
+            green_seconds = light_recommendation["green_seconds"]
+            yellow_seconds = light_recommendation["yellow_seconds"]
+            all_red_seconds = light_recommendation["all_red_seconds"]
+
+            # The controller keeps the current phase stable until its timer expires.
+            signal_state = signal_controller.update(light_recommendation)
+            active_road = signal_state["road"]
+            signal_phase = signal_state["phase"]
+            remaining_seconds = signal_state["remaining_seconds"]
+            next_road = signal_state["next_road"]
+
+            # 6. Draw road regions.
             # Thin outlines show which part of the frame is analyzed.
             for road_name, roi in road_regions.items():
                 x1, y1, x2, y2 = roi
@@ -135,7 +262,7 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            # 6. Draw vehicle bounding boxes and tracking labels.
+            # 7. Draw vehicle bounding boxes and tracking labels.
             for vehicle in vehicles:
                 bbox = vehicle.get("bbox")
 
@@ -224,7 +351,7 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            # 7. Draw the vehicle-count dashboard.
+            # 8. Draw the vehicle-count dashboard.
             panel_x = 10
             panel_y = 10
             panel_width = 350
@@ -312,7 +439,7 @@ def main():
                 cv2.LINE_AA,
             )
 
-            # 8. Draw intersection demand dashboard.
+            # 9. Draw intersection demand dashboard.
             # Show each road's count, density, and demand level.
             demand_panel_x = 10
             demand_panel_y = panel_y + panel_height + 15
@@ -418,7 +545,7 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            # 9. Highlight the recommended highest-demand approach.
+            # 10. Highlight the highest-demand approach and draw light advice.
             priority_y = (
                 demand_panel_y
                 + demand_header_height
@@ -460,7 +587,100 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            # 10. Resize without changing the aspect ratio.
+            # 11. Compact, stable traffic-signal status panel.
+            # The signal state changes only when its timer expires.
+            light_panel_width = min(300, frame_width - 20)
+            light_panel_height = 112
+            light_panel_x = max(10, frame_width - light_panel_width - 10)
+            light_panel_y = 10
+
+            cv2.rectangle(
+                frame,
+                (light_panel_x, light_panel_y),
+                (
+                    min(frame_width - 1, light_panel_x + light_panel_width),
+                    min(frame_height - 1, light_panel_y + light_panel_height),
+                ),
+                PANEL_BG,
+                -1,
+            )
+
+            phase_colors = {
+                "GREEN": (0, 220, 0),
+                "YELLOW": (0, 220, 255),
+                "ALL_RED": (0, 0, 255),
+            }
+            active_color = phase_colors.get(signal_phase, TEXT_COLOR)
+
+            cv2.putText(
+                frame,
+                "TRAFFIC SIGNAL",
+                (light_panel_x + 9, light_panel_y + 19),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.48,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+            signal_text = (
+                "ALL ROADS: RED"
+                if signal_phase == "ALL_RED"
+                else f"{active_road.upper()}: {signal_phase}"
+            )
+            cv2.putText(
+                frame,
+                signal_text,
+                (light_panel_x + 9, light_panel_y + 43),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.60,
+                active_color,
+                2,
+                cv2.LINE_AA,
+            )
+
+            cv2.putText(
+                frame,
+                f"TIME LEFT: {remaining_seconds}s",
+                (light_panel_x + 9, light_panel_y + 66),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                TEXT_COLOR,
+                1,
+                cv2.LINE_AA,
+            )
+
+            next_text = f"NEXT: {next_road.upper()}" if next_road else "NEXT: REASSESS"
+            cv2.putText(
+                frame,
+                next_text,
+                (light_panel_x + 9, light_panel_y + 89),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                TEXT_COLOR,
+                1,
+                cv2.LINE_AA,
+            )
+
+            # Draw compact signal indicators: active road gets the current phase;
+            # every other road remains RED. ALL_RED keeps every road red.
+            signal_dot_x = light_panel_x + light_panel_width - 20
+            signal_dot_y = light_panel_y + 34
+            lamp_color = (
+                (0, 220, 0) if signal_phase == "GREEN"
+                else (0, 220, 255) if signal_phase == "YELLOW"
+                else (0, 0, 255)
+            )
+            cv2.circle(
+                frame,
+                (signal_dot_x, signal_dot_y),
+                7,
+                lamp_color,
+                -1,
+                cv2.LINE_AA,
+            )
+
+            # 12. Resize without changing the aspect ratio.
             scale = min(
                 1100 / frame_width,
                 650 / frame_height,
@@ -496,6 +716,7 @@ def main():
         print(f"{vehicle_type.capitalize()}: {count}")
 
     print("===============================================")
+    print("Traffic-light phases are simulated; no physical signal is controlled.")
 
 
 if __name__ == "__main__":
