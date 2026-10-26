@@ -475,9 +475,11 @@ Detect and count pedestrians, display a simulated WAIT/WALK signal, and enforce 
 
 
 
+  python -m tests.test_vehicles_tracker for , Density.mp4
 
-
-python -m tests.test_vehicles_tracker_counter_speed , spped.mp4
+python -m tests.test_vehicles_tracker_counter_speed , speed.mp4
 
 python -m tests.test_plate_service for , plate.mp4
 
+ python -m tests.test_pedestrian for , Mans.mp4
+ 
